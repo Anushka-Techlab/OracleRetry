@@ -1,0 +1,59 @@
+name: retry-oci-instance
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: '*/30 * * * *'
+
+concurrency:
+  group: retry-oci-instance
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+  actions: write
+
+jobs:
+  retry:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Oracle CLI
+        run: python -m pip install --disable-pip-version-check oci-cli==3.96.3
+
+      - name: Retry stack apply
+        id: retry
+        env:
+          OCI_CLI_USER: ${{ secrets.OCI_CLI_USER }}
+          OCI_CLI_TENANCY: ${{ secrets.OCI_CLI_TENANCY }}
+          OCI_CLI_REGION: ${{ secrets.OCI_CLI_REGION }}
+          OCI_CLI_FINGERPRINT: ${{ secrets.OCI_CLI_FINGERPRINT }}
+          OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_CLI_KEY_CONTENT }}
+          OCI_STACK_ID: ${{ secrets.OCI_STACK_ID }}
+        run: python scripts/retry.py
+
+      - name: Notify the repository owner
+        if: steps.retry.outputs.result == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JOB_MARKER: ${{ steps.retry.outputs.marker }}
+          NOTIFY_USER: ${{ vars.NOTIFY_USER }}
+        run: bash scripts/notify.sh
+
+      - name: Start the next run if still waiting for capacity
+        if: steps.retry.outputs.result == 'continue'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run retry-oci.yml --repo "$GITHUB_REPOSITORY" --ref main
